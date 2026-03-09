@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="de-CH">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CarStation</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+  <!--
+    CarStation – Frontend für: anzeigen (GET), erstellen (POST), löschen (DELETE)
+
+    SETUP: Trage unten deine echten Endpoints ein:
+      - GET_CARS_URL:    z.B. .../getCars
+      - CREATE_CAR_URL:  z.B. .../createCar
+      - DELETE_CAR_URL:  z.B. .../deleteCar   (oder .../cars/{id})
+  -->
+
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <div class="logo" aria-hidden="true"></div>
+        <div class="title">
+          <h1>CarStation</h1>
+          <p>Autos anzeigen • erstellen • löschen (DynamoDB)</p>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="icon" id="refreshBtn" title="Reload">
+          ⟳ <span>Reload</span> <span class="kbd">R</span>
+        </button>
+        <button class="primary icon" id="loadBtn">
+          🚗 <span>Autos laden</span>
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <!-- LIST -->
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Garage</h2>
+            <small id="countText">0 Fahrzeuge</small>
+          </div>
+          <small class="muted" id="apiHint">API: nicht gesetzt</small>
+        </div>
+
+        <div class="card-body">
+          <div class="empty" id="emptyState" style="display:none;">
+            Noch keine Autos da. Erstelle rechts dein erstes Fahrzeug ✨
+          </div>
+
+          <div style="overflow:auto;">
+            <table id="carsTable" aria-label="Car list">
+              <thead>
+                <tr>
+                  <th style="width:90px;">ID</th>
+                  <th>Name</th>
+                  <th style="width:140px;">Jahrgang</th>
+                  <th style="width:140px;">Aktion</th>
+                </tr>
+              </thead>
+              <tbody id="carsTbody"></tbody>
+            </table>
+          </div>
+
+          <div class="toolbar">
+            <div class="status">
+              <span class="pill"><span class="dot" id="dot"></span><span id="statusText">Bereit</span></span>
+              <span class="pill">Letzter Sync: <span id="lastSync">–</span></span>
+            </div>
+            <button id="copyJsonBtn" class="icon">📋 <span>Copy JSON</span></button>
+          </div>
+
+          <details style="margin-top:12px;">
+            <summary style="cursor:pointer; color: rgba(255,255,255,.78);">Debug Output</summary>
+            <pre class="muted" id="debugOut">–</pre>
+          </details>
+        </div>
+      </section>
+
+      <!-- CREATE / DELETE -->
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Neues Auto</h2>
+            <small>Format: <span class="muted">{ id, name, jahrgang }</span></small>
+          </div>
+          <small class="muted">CarStation</small>
+        </div>
+
+        <div class="card-body">
+          <form id="createForm" class="grid" autocomplete="off">
+            <div class="col-12">
+              <label for="name">Name (Marke)</label>
+              <input id="name" placeholder="z.B. BMW" />
+            </div>
+            <div class="col-12">
+              <label for="jahrgang">Jahrgang</label>
+              <input id="jahrgang" type="number" inputmode="numeric" placeholder="z.B. 2018" />
+            </div>
+            <div class="col-12" style="display:flex; gap:10px; flex-wrap:wrap;">
+              <button class="primary icon" type="submit" id="createBtn">➕ <span>Erstellen</span></button>
+              <button type="button" id="prefillBtn" class="icon">✨ <span>Beispiel füllen</span></button>
+            </div>
+          </form>
+
+          <p class="hint">
+            Tipp: Wenn du über API Gateway/Function URL arbeitest, muss deine Lambda für <span class="muted">POST</span> und
+            <span class="muted">DELETE</span> CORS erlauben (bei dir ist <span class="muted">Access-Control-Allow-Origin: *</span> schon drin).
+          </p>
+
+          <hr style="border:none; border-top:1px solid rgba(255,255,255,.06); margin:16px 0;" />
+
+          <div class="grid">
+            <div class="col-12">
+              <label for="deleteId">Auto löschen (ID)</label>
+              <input id="deleteId" placeholder="z.B. 3" />
+            </div>
+            <div class="col-12" style="display:flex; gap:10px; flex-wrap:wrap;">
+              <button class="danger icon mini" id="deleteBtn" type="button">🗑️ <span>Löschen</span></button>
+              <button type="button" class="icon mini" id="deleteSelectedBtn">🎯 <span>Lösche markiertes</span></button>
+            </div>
+          </div>
+
+          <p class="hint">
+            Du kannst rechts die ID eintippen oder in der Tabelle links auf <span class="muted">Delete</span> drücken.
+          </p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">
+    <div>
+      <div class="toast-title" id="toastTitle">Info</div>
+      <div class="toast-msg" id="toastMsg"></div>
+    </div>
+    <button class="toast-close" id="toastClose">OK</button>
+  </div>
+
+  <script>
+    /***********************
+     * 1) API ENDPOINTS
+     ***********************/
+    const GET_CARS_URL   = "https://kzj54dwfg6.execute-api.us-east-1.amazonaws.com/getCars";
+    const CREATE_CAR_URL = "https://kzj54dwfg6.execute-api.us-east-1.amazonaws.com/createCar"; // <-- HIER anpassen
+    const DELETE_CAR_URL = "https://kzj54dwfg6.execute-api.us-east-1.amazonaws.com/deleteCar"; // <-- HIER anpassen
+
+    // Wenn dein Delete Endpoint ein Path-Parameter ist (z.B. /cars/{id}), setze das auf true:
+    const DELETE_USES_PATH_PARAM = false;
+
+    /***********************
+     * UI helpers
+     ***********************/
+    const els = {
+      loadBtn: document.getElementById("loadBtn"),
+      refreshBtn: document.getElementById("refreshBtn"),
+      out: document.getElementById("debugOut"),
+      tbody: document.getElementById("carsTbody"),
+      countText: document.getElementById("countText"),
+      emptyState: document.getElementById("emptyState"),
+      lastSync: document.getElementById("lastSync"),
+      statusText: document.getElementById("statusText"),
+      dot: document.getElementById("dot"),
+      apiHint: document.getElementById("apiHint"),
+      copyJsonBtn: document.getElementById("copyJsonBtn"),
+      createForm: document.getElementById("createForm"),
+      name: document.getElementById("name"),
+      jahrgang: document.getElementById("jahrgang"),
+      prefillBtn: document.getElementById("prefillBtn"),
+      deleteId: document.getElementById("deleteId"),
+      deleteBtn: document.getElementById("deleteBtn"),
+      deleteSelectedBtn: document.getElementById("deleteSelectedBtn"),
+      toast: document.getElementById("toast"),
+      toastTitle: document.getElementById("toastTitle"),
+      toastMsg: document.getElementById("toastMsg"),
+      toastClose: document.getElementById("toastClose"),
+    };
+
+    let lastCarsJson = [];
+    let selectedId = null;
+
+    function setStatus(type, text){
+      els.statusText.textContent = text;
+      els.dot.classList.remove("ok","bad");
+      if (type === "ok") els.dot.classList.add("ok");
+      else if (type === "bad") els.dot.classList.add("bad");
+    }
+
+    function toast(title, msg){
+      els.toastTitle.textContent = title;
+      els.toastMsg.textContent = msg;
+      els.toast.classList.add("show");
+    }
+    els.toastClose.addEventListener("click", () => els.toast.classList.remove("show"));
+
+    function setDebug(obj){
+      els.out.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+    }
+
+    function fmtTime(d = new Date()){
+      return d.toLocaleString("de-CH", { hour12:false });
+    }
+
+    function apiHint(){
+      const ok = GET_CARS_URL && CREATE_CAR_URL && DELETE_CAR_URL;
+      els.apiHint.textContent = ok ? "API: konfiguriert" : "API: nicht gesetzt";
+    }
+    apiHint();
+
+    /***********************
+     * 2) API calls
+     ***********************/
+    async function loadCars(){
+      setStatus("", "Lade Autos…");
+      setDebug("loading…");
+      try{
+        const r = await fetch(GET_CARS_URL, { method: "GET" });
+        if(!r.ok) throw new Error(`GET failed: HTTP ${r.status}`);
+        const data = await r.json();
+
+        // Erwartetes Format: Array<{id,name,jahrgang}>
+        if(!Array.isArray(data)) throw new Error("API did not return an array");
+
+        lastCarsJson = data.slice().sort((a,b) => Number(a.id) - Number(b.id));
+        renderTable(lastCarsJson);
+
+        els.lastSync.textContent = fmtTime();
+        setStatus("ok", "Autos geladen");
+        setDebug(lastCarsJson);
+      }catch(e){
+        setStatus("bad", "Fehler beim Laden");
+        setDebug(String(e));
+        toast("Fehler", String(e));
+      }
+    }
+
+    async function createCar(name, jahrgang){
+      setStatus("", "Erstelle Auto…");
+      try{
+        const payload = { name, jahrgang: Number(jahrgang) };
+
+        const r = await fetch(CREATE_CAR_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        const txt = await r.text();
+        const body = safeJson(txt);
+
+        if(!r.ok) throw new Error(`POST failed: HTTP ${r.status} - ${txt}`);
+
+        setStatus("ok", "Auto erstellt");
+        toast("Erstellt ✅", `Auto "${name}" (${jahrgang}) wurde erstellt.`);
+        setDebug(body ?? txt);
+
+        // reload list
+        await loadCars();
+      }catch(e){
+        setStatus("bad", "Fehler beim Erstellen");
+        setDebug(String(e));
+        toast("Fehler", String(e));
+      }
+    }
+
+    async function deleteCar(id){
+      setStatus("", "Lösche Auto…");
+      try{
+        const url = DELETE_USES_PATH_PARAM
+          ? `${DELETE_CAR_URL.replace(/\/$/, "")}/${encodeURIComponent(id)}`
+          : `${DELETE_CAR_URL}?id=${encodeURIComponent(id)}`;
+
+        const r = await fetch(url, { method: "DELETE" });
+
+        const txt = await r.text();
+        if(!r.ok) throw new Error(`DELETE failed: HTTP ${r.status} - ${txt}`);
+
+        setStatus("ok", "Auto gelöscht");
+        toast("Gelöscht 🗑️", `Auto mit ID ${id} wurde gelöscht.`);
+        setDebug(safeJson(txt) ?? txt);
+
+        selectedId = null;
+        await loadCars();
+      }catch(e){
+        setStatus("bad", "Fehler beim Löschen");
+        setDebug(String(e));
+        toast("Fehler", String(e));
+      }
+    }
+
+    function safeJson(text){
+      try{ return JSON.parse(text); } catch { return null; }
+    }
+
+    /***********************
+     * 3) Render
+     ***********************/
+    function renderTable(cars){
+      els.tbody.innerHTML = "";
+
+      els.countText.textContent = `${cars.length} Fahrzeug${cars.length === 1 ? "" : "e"}`;
+      els.emptyState.style.display = cars.length ? "none" : "block";
+      document.getElementById("carsTable").style.display = cars.length ? "table" : "none";
+
+      for(const c of cars){
+        const tr = document.createElement("tr");
+
+        const isSelected = String(c.id) === String(selectedId);
+
+        tr.innerHTML = `
+          <td style="font-family: var(--mono); color: rgba(255,255,255,.8);">${escapeHtml(c.id ?? "")}</td>
+          <td>
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span style="
+                width:10px;height:10px;border-radius:99px;
+                background: ${isSelected ? "var(--accent2)" : "rgba(255,255,255,.25)"};
+                box-shadow: 0 0 0 4px ${isSelected ? "rgba(0,212,255,.14)" : "rgba(255,255,255,.06)"};
+              "></span>
+              <strong>${escapeHtml(c.name ?? "")}</strong>
+            </div>
+          </td>
+          <td>${escapeHtml(String(c.jahrgang ?? ""))}</td>
+          <td>
+            <div class="row-actions">
+              <button class="mini icon" data-action="select" data-id="${escapeHtml(String(c.id))}">🎯 <span>Select</span></button>
+              <button class="mini danger icon" data-action="delete" data-id="${escapeHtml(String(c.id))}">🗑️ <span>Delete</span></button>
+            </div>
+          </td>
+        `;
+
+        els.tbody.appendChild(tr);
+      }
+
+      // Event delegation for table buttons
+      els.tbody.querySelectorAll("button[data-action]").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+          const action = btn.getAttribute("data-action");
+          const id = btn.getAttribute("data-id");
+          if(action === "select"){
+            selectedId = id;
+            els.deleteId.value = id;
+            renderTable(lastCarsJson);
+            toast("Ausgewählt 🎯", `Auto mit ID ${id} ist markiert.`);
+          }
+          if(action === "delete"){
+            if(confirm(`Auto mit ID ${id} wirklich löschen?`)){
+              await deleteCar(id);
+            }
+          }
+        });
+      });
+    }
+
+    function escapeHtml(str){
+      return String(str)
+        .replaceAll("&","&amp;")
+        .replaceAll("<","&lt;")
+        .replaceAll(">","&gt;")
+        .replaceAll('"',"&quot;")
+        .replaceAll("'","&#039;");
+    }
+
+    /***********************
+     * 4) Wire up events
+     ***********************/
+    els.loadBtn.addEventListener("click", loadCars);
+    els.refreshBtn.addEventListener("click", loadCars);
+
+    els.createForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = els.name.value.trim();
+      const jahrgang = Number(els.jahrgang.value);
+
+      if(!name){
+        toast("Fehlt", "Bitte einen Namen (Marke) eingeben.");
+        els.name.focus();
+        return;
+      }
+      if(!Number.isInteger(jahrgang) || jahrgang < 1886 || jahrgang > 2100){
+        toast("Ungültig", "Jahrgang muss eine ganze Zahl zwischen 1886 und 2100 sein.");
+        els.jahrgang.focus();
+        return;
+      }
+
+      await createCar(name, jahrgang);
+      els.name.value = "";
+      els.jahrgang.value = "";
+      els.name.focus();
+    });
+
+    els.prefillBtn.addEventListener("click", () => {
+      const samples = [
+        { name:"BMW", jahrgang:2018 },
+        { name:"Mercedes", jahrgang:2021 },
+        { name:"Audi", jahrgang:2015 },
+        { name:"Toyota", jahrgang:2019 },
+        { name:"Porsche", jahrgang:2020 },
+      ];
+      const s = samples[Math.floor(Math.random() * samples.length)];
+      els.name.value = s.name;
+      els.jahrgang.value = s.jahrgang;
+      toast("Beispiel ✨", `Ausgefüllt: ${s.name} (${s.jahrgang})`);
+    });
+
+    els.deleteBtn.addEventListener("click", async () => {
+      const id = els.deleteId.value.trim();
+      if(!id){
+        toast("Fehlt", "Bitte eine ID zum Löschen eingeben.");
+        els.deleteId.focus();
+        return;
+      }
+      if(confirm(`Auto mit ID ${id} wirklich löschen?`)){
+        await deleteCar(id);
+      }
+    });
+
+    els.deleteSelectedBtn.addEventListener("click", async () => {
+      const id = selectedId || els.deleteId.value.trim();
+      if(!id){
+        toast("Fehlt", "Kein Auto ausgewählt. Klicke in der Tabelle auf Select oder gib eine ID ein.");
+        return;
+      }
+      if(confirm(`Auto mit ID ${id} wirklich löschen?`)){
+        await deleteCar(id);
+      }
+    });
+
+    els.copyJsonBtn.addEventListener("click", async () => {
+      try{
+        await navigator.clipboard.writeText(JSON.stringify(lastCarsJson, null, 2));
+        toast("Kopiert 📋", "JSON wurde in die Zwischenablage kopiert.");
+      }catch(e){
+        toast("Hinweis", "Clipboard nicht verfügbar. Schau in den Debug Output.");
+      }
+    });
+
+    // Keyboard shortcut: R = reload
+    document.addEventListener("keydown", (e) => {
+      if(e.key.toLowerCase() === "r"){
+        loadCars();
+      }
+    });
+
+    // Auto-load on start
+    loadCars();
+  </script>
+</body>
+</html>
